@@ -11,17 +11,41 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
 const $ = id => document.getElementById(id);
 const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 let catalog=[], adminProducts=[], currentUser=null, isAdmin=false, costsAvailable=true;
-const imageUrl = path => supabase.storage.from('product-images').getPublicUrl(path).data.publicUrl;
+// The product-images bucket is private: public URLs cannot display its files.
+// Download through Supabase Storage so the existing SELECT RLS policies apply.
+const activeImageUrls = new Set();
+function clearImageUrls(){
+ for(const url of activeImageUrls) URL.revokeObjectURL(url);
+ activeImageUrls.clear();
+}
+async function showPrivateImage(path, photo, alt){
+ try{
+  const {data,error}=await supabase.storage.from('product-images').download(path);
+  if(error) throw error;
+  // Search/filter can redraw the catalog while a download is in progress.
+  if(!photo.isConnected) return;
+  const url=URL.createObjectURL(data);
+  activeImageUrls.add(url);
+  const img=document.createElement('img');
+  img.alt=alt;img.loading='lazy';
+  img.onerror=()=>{if(photo.isConnected) photo.textContent='Image unavailable';URL.revokeObjectURL(url);activeImageUrls.delete(url);};
+  img.src=url;
+  photo.replaceChildren(img);
+ }catch(err){
+  console.error('Storage image download failed:',path,err);
+  if(photo.isConnected) photo.textContent='Image unavailable';
+ }
+}
 const mailto = p => {const subject=`Wholesale Price Inquiry - ${p.brand||''} ${p.model||''}`; const body=`Hello BigHeart Luxury Supply,\n\nI would like the wholesale price and availability for:\nBrand: ${p.brand||''}\nModel: ${p.model||''}\nSKU: ${p.sku||''}\n\nPlease share condition, restoration details, shipping terms, and available documentation.\n\nBusiness name:\nContact name:\n`;return `mailto:bigheartsupply@gmail.com?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;};
 function renderCatalog(){
  const term=$('catalogSearch').value.trim().toLowerCase(), brand=$('brandFilter').value;
  const filtered=catalog.filter(p=>(!brand||p.brand===brand)&&[p.brand,p.model,p.sku,p.color,p.description].some(x=>String(x||'').toLowerCase().includes(term)));
- $('catalogGrid').replaceChildren();$('catalogEmpty').classList.toggle('hidden',filtered.length>0);
+ clearImageUrls();$('catalogGrid').replaceChildren();$('catalogEmpty').classList.toggle('hidden',filtered.length>0);
  for(const p of filtered){
   const article=document.createElement('article');article.className='product-card';
   const paths=(p.product_images||[]).map(x=>x.storage_path).filter(Boolean);
   const photo=document.createElement('div');photo.className='product-photo';
-  if(paths.length){const img=document.createElement('img');img.src=imageUrl(paths[0]);img.alt=`${p.brand||''} ${p.model||''}`;img.loading='lazy';img.onerror=()=>{photo.textContent='Image unavailable';};photo.append(img);}else photo.textContent='Photo on request';
+  if(paths.length){photo.textContent='Loading image…';showPrivateImage(paths[0],photo,`${p.brand||''} ${p.model||''}`);}else photo.textContent='Photo on request';
   const body=document.createElement('div');body.className='product-body';
   body.innerHTML=`<div class="product-brand">${esc(p.brand)}</div><h3>${esc(p.model||'Designer handbag')}</h3>${p.size||p.color?`<p>${esc([p.size,p.color].filter(Boolean).join(' · '))}</p>`:''}${p.condition_notes?`<p><strong>Condition:</strong> ${esc(p.condition_notes)}</p>`:''}${p.restoration_notes?`<p><strong>Restoration:</strong> ${esc(p.restoration_notes)}</p>`:''}${p.parts_replacement_notes?`<p><strong>Parts:</strong> ${esc(p.parts_replacement_notes)}</p>`:''}`;
   const link=document.createElement('a');link.className='btn';link.textContent='Request Wholesale Price';link.href=mailto(p);body.append(link);article.append(photo,body);$('catalogGrid').append(article);
